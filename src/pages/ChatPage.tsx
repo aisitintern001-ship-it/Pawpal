@@ -1760,7 +1760,54 @@ const ChatPage: React.FC = () => {
   };
 
 
-  // Render the chat interface or conversation list
+  // Owner-only 'Mark as Adopted' button
+  const [chatPostStatus, setChatPostStatus] = React.useState("");
+  React.useEffect(() => {
+    const convo = conversations.find(c => c.conversation_id === conversationId);
+    if (convo && convo.post_id) {
+      supabase.from('posts').select('status,user_id').eq('id', convo.post_id).single()
+        .then(({data}) => {
+          if (data) setChatPostStatus(data.status || "");
+        });
+    }
+  }, [conversationId, conversations]);
+
+  const isOwner = (() => {
+    const convo = conversations.find(c => c.conversation_id === conversationId);
+    if (!convo || !convo.post_id || !user) return false;
+    const [found] = conversations.filter(c => c.conversation_id === conversationId);
+    // If you already pull owner_id, use that; else fetch from post data like above
+    return found && found.post_id && user && chatPostStatus && user.id && found.post_id
+      ? found.owner_id
+        ? found.owner_id === user.id
+        : false // If not available on conversation, you can extend to fetch and compare
+      : false;
+  })();
+
+  // Add Owner Mark As Adopted Button as part of chat main area (insert wherever fits, e.g., just above message list)
+  const MarkAsAdoptedButton = conversationId && isOwner && chatPostStatus.toLowerCase() !== "adopted" ? (
+    <button
+      className="ml-2 px-4 py-2 rounded bg-green-500 text-white font-semibold shadow"
+      onClick={async () => {
+        const convo = conversations.find(c => c.conversation_id === conversationId);
+        if (!convo || !convo.post_id) return;
+        const { error } = await supabase
+          .from("posts")
+          .update({ status: "Adopted" })
+          .eq("id", convo.post_id);
+        if (!error) {
+          setChatPostStatus("Adopted");
+          toast.success("Pet marked as Adopted!");
+        } else {
+          toast.error("Failed to mark as Adopted");
+        }
+      }}
+    >
+      Mark as Adopted
+    </button>
+  ) : null;
+
+// Render the chat interface or conversation list
   if (!user) {
     return (
       <div className="flex items-center justify-center h-screen bg-gray-50">

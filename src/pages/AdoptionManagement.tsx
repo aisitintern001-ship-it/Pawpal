@@ -14,81 +14,61 @@ interface AdoptedRecord {
 
 export default function AdoptionManagement() {
   const [loading, setLoading] = useState(true);
+  const [records, setRecords] = useState<AdoptedRecord[]>([]);
 
   const fetchAdoptions = useCallback(async () => {
     setLoading(true);
+    setRecords([]); // Reset records at start
     try {
-      // Fetch posts marked as adopted. Try filtering directly in query first
-      let postsData: any[] | null = null;
+      // Try "posts" table first (same as Post Management uses), fallback to "post"
+      let allPosts: any[] = [];
       let postsError: any = null;
-      
-      // First, try to query posts with status filter directly (case-insensitive)
-      try {
-        const res = await supabase
-          .from("posts")
-          .select("id, name, image_url, updated_at, created_at, status")
-          .in("status", ["adopted", "Adopted", "ADOPTED"])
-          .order("updated_at", { ascending: false });
-        postsData = res.data as any[] | null;
-        postsError = res.error;
-        
-        if (postsError || !postsData || postsData.length === 0) {
-          console.warn("No posts found with direct status filter, trying without filter:", postsError);
-          // If direct filter returns no results, try without filter and filter in JS
-          const res2 = await supabase
-            .from("posts")
-            .select("id, name, image_url, updated_at, created_at, status")
-            .order("updated_at", { ascending: false });
-          postsData = res2.data as any[] | null;
-          postsError = res2.error;
-        }
-      } catch (e) {
-        postsError = e;
-        console.warn("Exception with posts table, trying post table:", e);
-      }
 
-      // If still no data, try singular table name 'post' as fallback
-      if ((postsError || !postsData || postsData.length === 0)) {
-        try {
-          const res = await supabase
-            .from("post")
-            .select("id, name, image_url, updated_at, created_at, status")
-            .in("status", ["adopted", "Adopted", "ADOPTED"])
-            .order("updated_at", { ascending: false });
-          postsData = res.data as any[] | null;
-          postsError = res.error;
-          
-          if (postsError || !postsData || postsData.length === 0) {
-            // Try without filter
-            const res2 = await supabase
-              .from("post")
-              .select("id, name, image_url, updated_at, created_at, status")
-              .order("updated_at", { ascending: false });
-            postsData = res2.data as any[] | null;
-            postsError = res2.error;
-          }
-        } catch (e) {
-          postsError = e;
+      // First try "posts" table
+      const { data: postsData, error: postsErr } = await supabase
+        .from("posts")
+        .select("id, name, image_url, updated_at, created_at, status")
+        .order("updated_at", { ascending: false });
+
+      if (!postsErr && postsData) {
+        allPosts = postsData;
+      } else {
+        postsError = postsErr;
+        // Try "post" table as fallback
+        const { data: postData, error: postErr } = await supabase
+          .from("post")
+          .select("id, name, image_url, updated_at, created_at, status")
+          .order("updated_at", { ascending: false });
+        
+        if (!postErr && postData) {
+          allPosts = postData;
+          postsError = null;
+        } else {
+          postsError = postErr || postsError;
         }
       }
 
       if (postsError) {
         console.error("Error fetching posts:", postsError);
-        throw postsError;
+        // Don't throw - just show empty state
+        setRecords([]);
+        setLoading(false);
+        return;
       }
 
-      // Filter for adopted posts - handle various case variations (fallback if query filter didn't work)
-      const adoptedPosts =
-        postsData?.filter((p: any) => {
-          const status = (p.status || "").toLowerCase().trim();
-          return status === "adopted" || status.includes("adopted");
-        }) || [];
+      // Filter for adopted posts - handle various case variations
+      const adoptedPosts = allPosts.filter((p: any) => {
+        const status = (p.status || "").toLowerCase().trim();
+        return status === "adopted";
+      });
 
-      console.log(`Total posts fetched: ${postsData?.length || 0}`);
+      console.log(`Total posts fetched: ${allPosts.length}`);
       console.log(`Posts with 'adopted' status: ${adoptedPosts.length}`);
+      console.log("All post statuses:", allPosts.map((p: any) => ({ id: p.id, name: p.name, status: p.status })));
       
       if (adoptedPosts.length === 0) {
-        console.warn("No adopted posts found. Checking all posts statuses:", postsData?.map((p: any) => ({ id: p.id, name: p.name, status: p.status })));
+        console.warn("No adopted posts found.");
+        setRecords([]);
         setLoading(false);
         return;
       }
@@ -96,11 +76,6 @@ export default function AdoptionManagement() {
       const postIds = adoptedPosts.map((p: any) => p.id);
       
       console.log(`Found ${adoptedPosts.length} adopted posts with IDs:`, postIds);
-
-      if (postIds.length === 0) {
-        setLoading(false);
-        return;
-      }
 
       // Fetch adoption requests for these posts
       // Priority: Get approved requests first, then fallback to all requests for adopted posts
@@ -156,8 +131,10 @@ export default function AdoptionManagement() {
       }
 
       // Don't throw error if no apps found - we'll handle it gracefully
-      if (appsError && appsError.code !== 'PGRST116') { // PGRST116 = no rows returned
-        console.error("Error fetching adoption data:", appsError);
+      // PGRST116 = no rows returned (this is fine, just means no adoption requests found)
+      if (appsError && appsError.code !== 'PGRST116') {
+        console.warn("Error fetching adoption data (non-critical):", appsError);
+        // Continue anyway - we'll show pets without adopter info
       }
 
       const ACCEPTED_STATUSES = ["approved", "accepted", "adopted", "completed"];
@@ -227,7 +204,10 @@ export default function AdoptionManagement() {
             .select("id, full_name")
             .in("id", adopterIds as any);
 
-          if (profilesError) throw profilesError;
+          if (profilesError) {
+            console.warn("Error fetching profiles (non-critical):", profilesError);
+            // Continue - we'll try other sources
+          }
 
           if (profilesData && profilesData.length > 0) {
             usersMap = profilesData.reduce((acc: Record<string, any>, u: any) => {
@@ -305,11 +285,14 @@ export default function AdoptionManagement() {
 
       console.log(`Created ${records.length} adoption records`);
       console.log("Records:", records);
-      // setRecords(records); // This line is removed as per the edit hint
-    } catch (error) {
+      setRecords(records); // Load real adoption records into the component
+      setLoading(false);
+    } catch (error: any) {
       console.error("Error fetching adoptions:", error);
-      toast.error("Failed to fetch adoption records");
-    } finally {
+      const errorMessage = error?.message || "Unknown error occurred";
+      console.error("Full error details:", error);
+      toast.error(`Failed to fetch adoption records: ${errorMessage}`);
+      setRecords([]); // Set empty array on error
       setLoading(false);
     }
   }, []);
@@ -326,24 +309,7 @@ export default function AdoptionManagement() {
     );
   }
 
-  // --- FAKE DATA START ---
-  const fakeRecords = [
-    {
-      post_id: 1,
-      post_name: 'Nadia',
-      breed: 'Persian (Cat)',
-      adopted_at: '2025-12-01T00:00:00.000Z',
-      adopter_name: 'Knowell Lucky Versoza',
-    },
-    {
-      post_id: 2,
-      post_name: 'Chelsea',
-      breed: 'Domestic Shorthair (Cat)',
-      adopted_at: '2025-12-02T00:00:00.000Z',
-      adopter_name: 'Joey De Guzman',
-    },
-  ];
-  // --- FAKE DATA END ---
+  // Remove duplicate fetching logic: handled above with loading, setRecords
 
   return (
     <div className="p-6 relative">
@@ -354,32 +320,28 @@ export default function AdoptionManagement() {
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Pet</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Adopter</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Adopted On</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Breed</th>
             </tr>
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
-            {fakeRecords.map((r) => (
+            {records.map((r) => (
               <tr key={r.post_id}>
                 <td className="px-6 py-4 whitespace-nowrap">
-                  <div className="font-medium text-gray-900">{r.post_name} <span className="text-xs text-gray-500 font-normal">({r.breed})</span></div>
+                  <div className="font-medium text-gray-900">{r.post_name}</div>
                   <div className="text-sm text-gray-500">ID: {r.post_id}</div>
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap">
                   <div className="font-medium text-gray-900">{r.adopter_name}</div>
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                  {new Date(r.adopted_at).toLocaleDateString(undefined, {
+                  {r.adopted_at ? new Date(r.adopted_at).toLocaleDateString(undefined, {
                     year: 'numeric', month: 'long', day: 'numeric',
-                  })}
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap">
-                  {r.breed}
+                  }) : 'N/A'}
                 </td>
               </tr>
             ))}
-            {fakeRecords.length === 0 && (
+            {records.length === 0 && (
               <tr>
-                <td colSpan={4} className="px-6 py-12 text-center text-gray-400">No adoption records found matching your filter.</td>
+                <td colSpan={3} className="px-6 py-12 text-center text-gray-400">No adoption records found matching your filter.</td>
               </tr>
             )}
           </tbody>
