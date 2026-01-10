@@ -41,6 +41,52 @@ interface AdoptionRequest {
   post?: PostData;
 }
 
+// Utility function to create adoption chat
+const createAdoptionChat = async ({
+  adopterId,
+  ownerId,
+  postId,
+  adopterName,
+  petName,
+}: {
+  adopterId: string;
+  ownerId: string;
+  postId: number;
+  adopterName: string;
+  petName?: string;
+}) => {
+  const { data: existing, error: existingError } = await supabase
+    .rpc('find_shared_conversation', {
+      user_id_1: ownerId,
+      user_id_2: adopterId,
+      specific_post_id: postId,
+    });
+  if (!existingError && existing && existing.length > 0) return existing[0].conversation_id;
+  const { data, error } = await supabase
+    .from("conversations")
+    .insert([
+      {
+        title: adopterName,
+        post_id: postId,
+        adopter_name: adopterName,
+        owner_name: "",
+        pet_name: petName,
+        is_group: false,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+    ])
+    .select()
+    .single();
+  if (error) throw error;
+  const conversationId = data.id;
+  await supabase.from("user_conversations").insert([
+    { user_id: adopterId, conversation_id: conversationId, joined_at: new Date().toISOString() },
+    { user_id: ownerId, conversation_id: conversationId, joined_at: new Date().toISOString() },
+  ]);
+  return conversationId;
+};
+
 export const AdoptionRequestDetails: React.FC<AdoptionRequestDetailsProps> = ({
   requestId,
   onClose,
@@ -183,14 +229,16 @@ export const AdoptionRequestDetails: React.FC<AdoptionRequestDetailsProps> = ({
 
       if (updateError) throw updateError;
 
-      // Update post status if approved
+      // Create chat between adopter and owner if approved
       if (status === "approved") {
-        const { error: postError } = await supabase
-          .from("posts")
-          .update({ status: "Adopted" })
-          .eq("id", request.post_id);
-
-        if (postError) throw postError;
+        await createAdoptionChat({
+          adopterId: request.requester_id,
+          ownerId: request.owner_id,
+          postId: request.post_id,
+          adopterName: requester.full_name,
+          petName: request.post?.name,
+        });
+        toast.success("Chat created! Continue the adoption process in chat.");
       }
 
       // Create notification for requester
