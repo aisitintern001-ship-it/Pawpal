@@ -18,6 +18,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { toast } from "react-hot-toast";
 import { AdoptionRequestsList } from "./AdoptionRequestsList";
 import { MessageButton } from "./MessageButton";
+import { resolveUserIdentity } from "../utils/userIdentity";
 
 interface ModalProps {
   isOpen: boolean;
@@ -281,18 +282,50 @@ const updatePost = async (postId: number, updates: Partial<Post>) => {
   if (error) throw error;
 };
 
+const isPostIdSchemaError = (error: { code?: string | null; message?: string | null; details?: string | null }) => {
+  if (!error) return false;
+  const text = `${error.message || ""} ${error.details || ""}`.toLowerCase();
+  return error.code === "23503" || (text.includes("post_id") && text.includes("foreign key"));
+};
+
+const insertNotificationWithFallback = async (payload: {
+  user_id: string;
+  type: string;
+  message: string;
+  created_at: string;
+  requester_id?: string;
+  link?: string;
+  post_id?: number;
+}) => {
+  const firstAttempt = await supabase.from("notifications").insert([payload]);
+  if (!firstAttempt.error) return null;
+
+  if (payload.post_id && isPostIdSchemaError(firstAttempt.error)) {
+    const withoutPostId = { ...payload };
+    delete withoutPostId.post_id;
+    const secondAttempt = await supabase
+      .from("notifications")
+      .insert([withoutPostId]);
+    return secondAttempt.error;
+  }
+
+  return firstAttempt.error;
+};
+
 // Utility function to create adoption chat (shared between PostDetail and AdoptionRequestDetails)
 const createAdoptionChat = async ({
   adopterId,
   ownerId,
   postId,
   adopterName,
+  ownerName,
   petName,
 }: {
   adopterId: string;
   ownerId: string;
   postId: number;
   adopterName: string;
+  ownerName?: string;
   petName?: string;
 }) => {
   // Check for existing conversation
@@ -303,32 +336,54 @@ const createAdoptionChat = async ({
       specific_post_id: postId,
     });
   if (!existingError && existing && existing.length > 0) return existing[0].conversation_id;
-  
-  // Create new conversation
-  const { data, error } = await supabase
+
+  const baseConversationPayload = {
+    title: adopterName || ownerName || "Chat",
+    adopter_name: adopterName,
+    owner_name: ownerName || "",
+    pet_name: petName,
+    is_group: false,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+
+  let createResult = await supabase
     .from("conversations")
-    .insert([
-      {
-        title: adopterName,
-        post_id: postId,
-        adopter_name: adopterName,
-        owner_name: "",
-        pet_name: petName,
-        is_group: false,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      },
-    ])
+    .insert([{ ...baseConversationPayload, post_id: postId }])
     .select()
     .single();
-  if (error) throw error;
-  const conversationId = data.id;
-  
-  // Add both users to conversation
-  await supabase.from("user_conversations").insert([
-    { user_id: adopterId, conversation_id: conversationId, joined_at: new Date().toISOString() },
-    { user_id: ownerId, conversation_id: conversationId, joined_at: new Date().toISOString() },
-  ]);
+
+  if (createResult.error && isPostIdSchemaError(createResult.error)) {
+    createResult = await supabase
+      .from("conversations")
+      .insert([baseConversationPayload])
+      .select()
+      .single();
+  }
+
+  if (createResult.error) throw createResult.error;
+
+  const conversationId = createResult.data.id;
+
+  const { error: membersError } = await supabase
+    .from("user_conversations")
+    .upsert(
+      [
+        {
+          user_id: adopterId,
+          conversation_id: conversationId,
+          joined_at: new Date().toISOString(),
+        },
+        {
+          user_id: ownerId,
+          conversation_id: conversationId,
+          joined_at: new Date().toISOString(),
+        },
+      ],
+      { onConflict: "user_id,conversation_id", ignoreDuplicates: true }
+    );
+
+  if (membersError) throw membersError;
   return conversationId;
 };
 
@@ -377,48 +432,37 @@ const sendAdoptionRequest = async (
     }
 
     // Also create a notification for the pet owner
-    const { error: notificationError } = await supabase
-      .from("notifications")
-      .insert([
-        {
-          user_id: ownerId,
-          type: "adoption_request",
-          message: `New adoption request for ${petName}${reason ? ` - Reason: ${reason}` : ""}`,
-          created_at: new Date().toISOString(),
-          read: false,
-          link: `/post/${postId}`,
-          post_id: postId,
-        },
-      ]);
+    const { name: requesterName } = await resolveUserIdentity(requesterId);
+    const { name: ownerName } = await resolveUserIdentity(ownerId);
+
+    const notificationError = await insertNotificationWithFallback({
+      user_id: ownerId,
+      type: "adoption_request",
+      message: `New adoption request for ${petName}${reason ? ` - Reason: ${reason}` : ""}`,
+      created_at: new Date().toISOString(),
+      requester_id: requesterId,
+      link: `/post/${postId}`,
+      post_id: postId,
+    });
 
     if (notificationError) {
       console.error("Error creating notification:", notificationError);
-      // Don't throw here, we still want to consider the adoption request as successful
-      // Just log the error for debugging
     }
 
     // Create chat immediately after submitting adoption request
     try {
-      // Get requester name for chat
-      const { data: requesterProfile } = await supabase
-        .from("profiles")
-        .select("full_name")
-        .eq("id", requesterId)
-        .single();
-      
-      const requesterName = requesterProfile?.full_name || "User";
       const conversationId = await createAdoptionChat({
         adopterId: requesterId,
-        ownerId: ownerId,
-        postId: postId,
+        ownerId,
+        postId,
         adopterName: requesterName,
-        petName: petName,
+        ownerName,
+        petName,
       });
-      
+
       return { ...data, conversationId };
     } catch (chatError) {
       console.error("Error creating chat:", chatError);
-      // Don't throw - adoption request was successful, chat creation is optional
     }
 
     return data;
@@ -460,18 +504,15 @@ const cancelAdoptionRequest = async (postId: number, requesterId: string) => {
     }
 
     // Create a notification for the owner
-    const { error: notificationError } = await supabase
-      .from("notifications")
-      .insert([
-        {
-          user_id: existingRequests[0].owner_id,
-          type: "adoption_cancelled",
-          message: `An adoption request for your pet has been cancelled`,
-          created_at: new Date().toISOString(),
-          read: false,
-          link: `/post/${postId}`,
-        },
-      ]);
+    const notificationError = await insertNotificationWithFallback({
+      user_id: existingRequests[0].owner_id,
+      type: "adoption_cancelled",
+      message: `An adoption request for your pet has been cancelled`,
+      created_at: new Date().toISOString(),
+      requester_id: requesterId,
+      link: `/post/${postId}`,
+      post_id: postId,
+    });
 
     if (notificationError) {
       console.error(

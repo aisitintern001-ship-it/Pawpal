@@ -10,6 +10,7 @@ import {
 import { toast } from "react-hot-toast";
 import { useAuth } from "../context/AuthContext";
 import { useNavigate } from "react-router-dom";
+import { resolveUserIdentity } from "../utils/userIdentity";
 
 interface AdoptionRequestDetailsProps {
   requestId: number;
@@ -43,17 +44,49 @@ interface AdoptionRequest {
 }
 
 // Utility function to create adoption chat
+const isPostIdSchemaError = (error: { code?: string | null; message?: string | null; details?: string | null }) => {
+  if (!error) return false;
+  const text = `${error.message || ""} ${error.details || ""}`.toLowerCase();
+  return error.code === "23503" || (text.includes("post_id") && text.includes("foreign key"));
+};
+
+const insertNotificationWithFallback = async (payload: {
+  user_id: string;
+  type: string;
+  message: string;
+  created_at: string;
+  requester_id?: string;
+  link?: string;
+  post_id?: number;
+}) => {
+  const firstAttempt = await supabase.from("notifications").insert([payload]);
+  if (!firstAttempt.error) return null;
+
+  if (payload.post_id && isPostIdSchemaError(firstAttempt.error)) {
+    const withoutPostId = { ...payload };
+    delete withoutPostId.post_id;
+    const secondAttempt = await supabase
+      .from("notifications")
+      .insert([withoutPostId]);
+    return secondAttempt.error;
+  }
+
+  return firstAttempt.error;
+};
+
 const createAdoptionChat = async ({
   adopterId,
   ownerId,
   postId,
   adopterName,
+  ownerName,
   petName,
 }: {
   adopterId: string;
   ownerId: string;
   postId: number;
   adopterName: string;
+  ownerName?: string;
   petName?: string;
 }) => {
   const { data: existing, error: existingError } = await supabase
@@ -63,28 +96,54 @@ const createAdoptionChat = async ({
       specific_post_id: postId,
     });
   if (!existingError && existing && existing.length > 0) return existing[0].conversation_id;
-  const { data, error } = await supabase
+
+  const baseConversationPayload = {
+    title: adopterName || ownerName || "Chat",
+    adopter_name: adopterName,
+    owner_name: ownerName || "",
+    pet_name: petName,
+    is_group: false,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+
+  let createResult = await supabase
     .from("conversations")
-    .insert([
-      {
-        title: adopterName,
-        post_id: postId,
-        adopter_name: adopterName,
-        owner_name: "",
-        pet_name: petName,
-        is_group: false,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      },
-    ])
+    .insert([{ ...baseConversationPayload, post_id: postId }])
     .select()
     .single();
-  if (error) throw error;
-  const conversationId = data.id;
-  await supabase.from("user_conversations").insert([
-    { user_id: adopterId, conversation_id: conversationId, joined_at: new Date().toISOString() },
-    { user_id: ownerId, conversation_id: conversationId, joined_at: new Date().toISOString() },
-  ]);
+
+  if (createResult.error && isPostIdSchemaError(createResult.error)) {
+    createResult = await supabase
+      .from("conversations")
+      .insert([baseConversationPayload])
+      .select()
+      .single();
+  }
+
+  if (createResult.error) throw createResult.error;
+
+  const conversationId = createResult.data.id;
+
+  const { error: membersError } = await supabase
+    .from("user_conversations")
+    .upsert(
+      [
+        {
+          user_id: adopterId,
+          conversation_id: conversationId,
+          joined_at: new Date().toISOString(),
+        },
+        {
+          user_id: ownerId,
+          conversation_id: conversationId,
+          joined_at: new Date().toISOString(),
+        },
+      ],
+      { onConflict: "user_id,conversation_id", ignoreDuplicates: true }
+    );
+
+  if (membersError) throw membersError;
   return conversationId;
 };
 
@@ -137,53 +196,23 @@ export const AdoptionRequestDetails: React.FC<AdoptionRequestDetailsProps> = ({
         // Fetch requester details
         if (requestData.requester_id) {
           try {
-            // First try to get user profile from the profiles table
-            const { data: profileData, error: profileError } = await supabase
+            const requesterIdentity = await resolveUserIdentity(
+              requestData.requester_id
+            );
+
+            const { data: profileData } = await supabase
               .from("profiles")
-              .select("id, full_name, avatar_url, location")
+              .select("avatar_url, location")
               .eq("id", requestData.requester_id)
               .maybeSingle();
 
-            if (!profileError && profileData) {
-              // Use profile data
-              setRequester({
-                id: profileData.id,
-                full_name: profileData.full_name || "Name not provided",
-                avatar_url: profileData.avatar_url,
-                location: profileData.location,
-                // We don't include email for privacy
-                email: "Contact via app messaging",
-              });
-            } else if (profileError && profileError.code === "42P01") {
-              // If profiles table doesn't exist, try to get user data directly
-              const { data: userData, error: userError } = await supabase.rpc(
-                "get_user_name",
-                { user_id: requestData.requester_id }
-              );
-
-              if (!userError && userData) {
-                // Use data from auth.users
-                setRequester({
-                  id: requestData.requester_id,
-                  full_name: userData || "User",
-                  email: "Contact via app messaging",
-                });
-              } else {
-                // Fallback to minimal info
-                setRequester({
-                  id: requestData.requester_id,
-                  full_name: "User",
-                  email: "Contact information not available",
-                });
-              }
-            } else {
-              // Fallback to minimal info
-              setRequester({
-                id: requestData.requester_id,
-                full_name: "User",
-                email: "Contact information not available",
-              });
-            }
+            setRequester({
+              id: requestData.requester_id,
+              full_name: requesterIdentity.name,
+              avatar_url: requesterIdentity.avatar || profileData?.avatar_url,
+              location: profileData?.location,
+              email: requesterIdentity.email || "Contact via app messaging",
+            });
           } catch (userError) {
             console.error("Error fetching user details:", userError);
             // Fallback to minimal info
@@ -233,6 +262,9 @@ export const AdoptionRequestDetails: React.FC<AdoptionRequestDetailsProps> = ({
 
       // If approved, also update post status to 'adopted'
       if (status === "approved") {
+        const requesterIdentity = await resolveUserIdentity(request.requester_id);
+        const ownerIdentity = await resolveUserIdentity(request.owner_id);
+
         // Change pet status to adopted
         const { error: postError } = await supabase
           .from("posts")
@@ -245,7 +277,8 @@ export const AdoptionRequestDetails: React.FC<AdoptionRequestDetailsProps> = ({
           adopterId: request.requester_id,
           ownerId: request.owner_id,
           postId: request.post_id,
-          adopterName: requester?.full_name || "Unknown",
+          adopterName: requesterIdentity.name,
+          ownerName: ownerIdentity.name,
           petName: request.post?.name,
         });
         toast.success("Adoption approved! Redirecting to chat...");
@@ -263,19 +296,15 @@ export const AdoptionRequestDetails: React.FC<AdoptionRequestDetailsProps> = ({
         request.post?.name || "the pet"
       } has been rejected.`;
 
-      const { error: notificationError } = await supabase
-        .from("notifications")
-        .insert([
-          {
-            user_id: request.requester_id,
-            type: `adoption_${status}`,
-            message,
-            read: false,
-            created_at: new Date().toISOString(),
-            link: `/post/${request.post_id}`,
-            post_id: request.post_id,
-          },
-        ]);
+      const notificationError = await insertNotificationWithFallback({
+        user_id: request.requester_id,
+        type: `adoption_${status}`,
+        message,
+        created_at: new Date().toISOString(),
+        link: `/post/${request.post_id}`,
+        post_id: request.post_id,
+        requester_id: request.owner_id,
+      });
 
       if (notificationError) {
         console.error("Error creating notification:", notificationError);

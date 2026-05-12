@@ -5,7 +5,6 @@ import { supabase } from "../supabase-client";
 interface AuthResponse {
   success: boolean;
   error?: string;
-  declinedReason?: string | null;
 }
 
 interface AdoptionValidation {
@@ -110,11 +109,11 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         }
       }
       
-      // Check if user already exists - get existing role to preserve it
+      // Check if user already exists
       const { data: existingUser, error: checkError } = await supabase
         .from("users")
-        .select("user_id, role, adoption_validation")
-        .eq("user_id", user.id)
+        .select("id, adoption_validation")
+        .eq("id", user.id)
         .maybeSingle();
       
       if (checkError) {
@@ -125,32 +124,23 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       // Only use existing adoption_validation if there's no cached one (to avoid overwriting with null)
       const finalAdoptionValidation = adoptionValidation || existingUser?.adoption_validation || null;
       
-      // Preserve existing role from database - don't overwrite admin/vet roles
-      // Only use metadata role if user doesn't exist yet (new signup)
-      const finalRole = existingUser?.role || user.user_metadata?.role || "user";
-      
       console.log("Final adoption validation for upsert:", finalAdoptionValidation);
-      console.log("Preserving role:", finalRole, "(existing:", existingUser?.role, ", metadata:", user.user_metadata?.role, ")");
       
       const userData = {
-        user_id: user.id,
+        id: user.id,
         email: user.email || "",
         full_name: user.user_metadata?.full_name || user.email?.split("@")[0] || "Unknown",
-        role: finalRole,
+        role: user.user_metadata?.role || "user",
         adoption_validation: finalAdoptionValidation,
         created_at: new Date().toISOString(),
       };
       
       console.log("Upserting user data:", userData);
       
-      // Upsert user profile - use update only for role to preserve existing role
+      // Upsert user profile regardless of admin/vet verification status
       const { data: upsertData, error: upsertError } = await supabase
         .from("users")
-        .upsert([userData], { 
-          onConflict: 'user_id',
-          // Only update role if it's not already set (preserve existing admin/vet roles)
-          ignoreDuplicates: false
-        })
+        .upsert([userData], { onConflict: 'id' })
         .select();
       
       if (upsertError) {
@@ -163,6 +153,25 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           .select();
         if (insertError) {
           console.error('Insert fallback also failed:', insertError);
+          // As a last-resort, call server RPC to create profile (SECURITY DEFINER RPC should be installed)
+          try {
+            if (adoptionValidation && typeof adoptionValidation === 'object') {
+              await supabase.rpc('create_user_profile_if_missing', {
+                _validation: adoptionValidation,
+                _full_name: userData.full_name,
+                _role: userData.role,
+              });
+                // Also persist the structured adoption answers into rows if table exists
+                try {
+                  await supabase.rpc('save_adoption_validation_for_current_user', { _validation: adoptionValidation });
+                } catch (innerRpcErr) {
+                  console.warn('save_adoption_validation_for_current_user failed:', innerRpcErr);
+                }
+              if (cached) localStorage.removeItem('pendingAdoptionValidation');
+            }
+          } catch (rpcErr) {
+            console.warn('RPC create_user_profile_if_missing failed:', rpcErr);
+          }
         } else {
           console.log('Insert fallback succeeded:', insertData);
           // Clear cached adoption validation after successful insert
@@ -175,6 +184,24 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         // Clear cached adoption validation after successful upsert
         if (cached) {
           localStorage.removeItem("pendingAdoptionValidation");
+        }
+        // Also attempt RPC to ensure profiles row exists (no-op if already present)
+        try {
+          await supabase.rpc('create_user_profile_if_missing', {
+            _validation: finalAdoptionValidation,
+            _full_name: userData.full_name,
+            _role: userData.role,
+          });
+          // Persist adoption validation into rows if available
+          if (finalAdoptionValidation) {
+            try {
+              await supabase.rpc('save_adoption_validation_for_current_user', { _validation: finalAdoptionValidation });
+            } catch (inner) {
+              console.warn('save_adoption_validation_for_current_user failed after upsert:', inner);
+            }
+          }
+        } catch (rpcErr) {
+          console.warn('RPC create_user_profile_if_missing after upsert failed:', rpcErr);
         }
       }
     };
@@ -202,14 +229,6 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     adoptionValidation?: AdoptionValidation
   ): Promise<AuthResponse> => {
     try {
-      const cleanedEmail = email.toLowerCase().trim();
-      // CLEAN OUT DECLINED USER RECORD
-      await supabase
-        .from("users")
-        .delete()
-        .eq("email", cleanedEmail)
-        .eq("declined", true);
-
       const fullName = first_name && last_name 
         ? `${first_name} ${last_name}` 
         : email.split("@")[0];
@@ -257,20 +276,23 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         error: authError?.message 
       });
 
-      // If signup fails due to existing email
+      // If signup fails due to existing email or server error
       if (authError) {
-        console.error("Signup error:", authError);
+        // Log full error object for diagnostics
+        console.error("Signup error (full):", authError);
+        const msg = authError?.message || JSON.stringify(authError);
         if (
-          authError.message.includes("already registered") ||
-          authError.message.includes("already exists") ||
-          authError.message.includes("User already registered")
+          msg.includes("already registered") ||
+          msg.includes("already exists") ||
+          msg.includes("User already registered")
         ) {
           return {
             success: false,
             error: "This email is already registered. Please use the login page to sign in.",
           };
         }
-        return { success: false, error: authError.message };
+        // Return the full error object stringified so UI can show more detail
+        return { success: false, error: typeof authError === 'string' ? authError : JSON.stringify(authError) };
       }
 
       // If user was created, try to insert into users table immediately
@@ -295,7 +317,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           .from("users")
           .insert([
             {
-              user_id: signUpData.user.id,
+              id: signUpData.user.id,
               email: email.toLowerCase().trim(),
               full_name: fullName,
               role,
@@ -305,11 +327,32 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           ])
           .select();
         
-        if (insertError) {
+          if (insertError) {
           console.error("Failed to insert user profile on sign up (this is OK, will retry after verification):", insertError);
           console.error("Insert error details:", JSON.stringify(insertError, null, 2));
           // Keep adoption validation in localStorage for retry after email verification
-        } else {
+          // Try RPC immediately so server creates the user/profile using auth.uid()
+          try {
+            // Call RPC regardless of whether adoption answers exist so a profiles row is created.
+            await supabase.rpc('create_user_profile_if_missing', {
+              _validation: finalAdoptionValidation,
+              _full_name: fullName,
+              _role: role,
+            });
+            // Persist adoption validation into rows if available (no-op if null)
+            try {
+              await supabase.rpc('save_adoption_validation_for_current_user', { _validation: finalAdoptionValidation });
+            } catch (saveErr) {
+              console.warn('save_adoption_validation_for_current_user failed after signup insert error:', saveErr);
+            }
+            // If RPC succeeded, clear localStorage
+            localStorage.removeItem('pendingAdoptionValidation');
+          } catch (rpcErr: any) {
+            console.warn('RPC create_user_profile_if_missing failed after signup insert error:', rpcErr);
+            // Return a clear error so the UI can show meaningful feedback.
+            return { success: false, error: rpcErr?.message || 'Database error saving new user' };
+          }
+          } else {
           console.log("Successfully inserted user profile:", insertData);
           // Clear localStorage since we successfully saved it
           if (finalAdoptionValidation) {
@@ -372,28 +415,8 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   ): Promise<AuthResponse> => {
     try {
       console.log("Attempting to sign in...");
-      const cleanedEmail = email.toLowerCase().trim();
-      
-      // FIRST: Check if user is declined BEFORE attempting password authentication
-      // This way we can show the decline modal even if password is wrong
-      const { data: declinedCheck, error: declinedCheckError } = await supabase
-        .from("users")
-        .select("declined, declined_reason, user_id")
-        .eq("email", cleanedEmail)
-        .maybeSingle();
-
-      // If we found a declined user, return decline reason immediately
-      if (!declinedCheckError && declinedCheck && declinedCheck.declined === true) {
-        return {
-          success: false,
-          error: "Your account has been declined and you cannot log in.",
-          declinedReason: declinedCheck.declined_reason || null,
-        };
-      }
-
-      // Now attempt password authentication
       const { data, error } = await supabase.auth.signInWithPassword({
-        email: cleanedEmail,
+        email: email.toLowerCase(),
         password,
       });
 
@@ -421,10 +444,10 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         };
       }
 
-      // Get user role, verification, and declined status from users table
+      // Get user role and verification from users table
       const { data: userData, error: userError } = await supabase
         .from("users")
-        .select("role, verified, declined, declined_reason")
+        .select("role, verified")
         .eq("user_id", data.user.id)
         .single();
 
@@ -434,16 +457,6 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         return {
           success: false,
           error: "Error fetching user account. Please contact support.",
-        };
-      }
-
-      // Double-check declined status (in case it was set after the initial check)
-      if (userData.declined === true) {
-        await supabase.auth.signOut();
-        return {
-          success: false,
-          error: "Your account has been declined and you cannot log in.",
-          declinedReason: userData.declined_reason || null,
         };
       }
 
@@ -472,26 +485,37 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         } catch {}
         localStorage.removeItem("pendingAdoptionValidation"); // Clean up after inserting
       }
-      // Preserve existing role - don't overwrite admin/vet roles
-      // Only update if the role from database is valid, otherwise keep existing
       const { error: upsertError } = await supabase
         .from("users")
         .upsert([
           {
-            user_id: data.user.id,
+            id: data.user.id,
             email: data.user.email,
-            role: userData?.role || "user", // userData comes from database query, so it's already the correct role
+            role: userData?.role || "user",
             full_name: data.user.user_metadata?.full_name || data.user.email?.split("@")[0] || "Unknown",
             adoption_validation: adoptionValidation,
             created_at: new Date().toISOString(),
           }
-        ], { 
-          onConflict: 'user_id',
-          // Don't update role if it already exists (preserve admin/vet roles)
-          // The role from userData is already correct from the database query above
-        });
+        ], { onConflict: 'id' });
       if (upsertError) {
         console.error('Upsert error:', upsertError);
+        // Fallback to server RPC to ensure adoption validation is stored
+        try {
+          if (adoptionValidation) {
+            await supabase.rpc('create_user_profile_if_missing', {
+              _validation: adoptionValidation,
+              _full_name: data.user.user_metadata?.full_name || data.user.email?.split('@')[0] || 'Unknown',
+              _role: userData?.role || 'user',
+            });
+            try {
+              await supabase.rpc('save_adoption_validation_for_current_user', { _validation: adoptionValidation });
+            } catch (saveErr) {
+              console.warn('save_adoption_validation_for_current_user failed on sign in upsert fallback:', saveErr);
+            }
+          }
+        } catch (rpcErr) {
+          console.warn('RPC create_user_profile_if_missing on sign in upsert failure:', rpcErr);
+        }
       }
 
       console.log("Sign in successful");
