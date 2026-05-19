@@ -255,6 +255,13 @@ const LoginPage = () => {
         onClose={() => {
           setShowErrorModal(false);
           setError("");
+          if (declinedReason) {
+            setVerifiedMessage(
+              "Thank you. Your declined account has been removed by the system. You can register again using the same email."
+            );
+            setShowDeclinedThankYou(true);
+            setShowVerifiedModal(true);
+          }
           setDeclinedReason(null);
           setDeclineAction(null);
         }}

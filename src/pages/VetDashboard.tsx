@@ -232,13 +232,18 @@ export default function VetDashboard() {
   const fetchPendingUsers = async () => {
     setLoading(true);
     try {
+      const pendingFilter =
+        "and(verified.is.null,declined.is.null)," +
+        "and(verified.is.null,declined.eq.false)," +
+        "and(verified.eq.false,declined.is.null)," +
+        "and(verified.eq.false,declined.eq.false)";
+
       // Fetch all users with role 'user' that are not verified
       const { data: usersData, error: usersError } = await supabase
         .from("users")
         .select("*")
         .eq("role", "user")
-        .or("verified.is.null,verified.eq.false")
-        .or("declined.is.null,declined.eq.false")
+        .or(pendingFilter)
         .order("created_at", { ascending: false });
 
       if (usersError) {

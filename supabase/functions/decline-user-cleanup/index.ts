@@ -3,8 +3,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 interface Payload {
   email?: string;
-  /** When true, remove decline_log rows for this email (use after the user has seen the decline reason, or on re-signup). */
-  purgeDeclineLog?: boolean;
+  forceAuthDelete?: boolean;
   /** Optional; each id must belong to the same email (verified server-side). */
   userIds?: string[];
 }
@@ -40,7 +39,7 @@ Deno.serve(async (req) => {
 
     const body = (await req.json()) as Payload;
     const cleanedEmail = typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
-    const purgeDeclineLog = body?.purgeDeclineLog === true;
+    const forceAuthDelete = body?.forceAuthDelete === true;
     const rawUserIds = Array.isArray(body?.userIds) ? body.userIds : [];
 
     if (!cleanedEmail) {
@@ -101,54 +100,45 @@ Deno.serve(async (req) => {
       }
     }
 
-    const { data: declinedUsers, error: findError } = await admin
+    let userQuery = admin
       .from("users")
       .select("user_id, email, declined, role")
-      .ilike("email", cleanedEmail)
-      .eq("declined", true);
+      .ilike("email", cleanedEmail);
+
+    if (!forceAuthDelete) {
+      userQuery = userQuery.eq("declined", true);
+    }
+
+    const { data: declinedUsers, error: findError } = await userQuery;
 
     if (findError) {
       return json({ error: "Failed to find declined user", details: findError.message }, 500);
     }
 
-    const declinedUserIds =
-      declinedUsers
-        ?.map((record) => record.user_id)
-        .filter((value): value is string => typeof value === "string" && value.length > 0) || [];
+    const userIds = declinedUsers
+      ?.map((record) => record.user_id)
+      .filter((value) => typeof value === "string" && value.length > 0) || [];
 
-    const { data: declineLogRows } = await admin
-      .from("decline_log")
-      .select("id")
-      .ilike("email", cleanedEmail)
-      .limit(1);
-
-    const hasDeclineLog = (declineLogRows?.length ?? 0) > 0;
-
+    // If the declined row was already removed, still try to delete lingering auth users.
     const authUserIds = await findAuthUserIdsByEmail(cleanedEmail);
 
-    // Never delete auth for a normal active email: only when decline is evidenced.
-    const shouldTouchAuth =
-      verifiedClientUserIds.length > 0 ||
-      declinedUserIds.length > 0 ||
-      hasDeclineLog;
-
     const idsToClean = Array.from(
-      new Set([
-        ...verifiedClientUserIds,
-        ...declinedUserIds,
-        ...(shouldTouchAuth ? authUserIds : []),
-      ])
+      new Set([...verifiedClientUserIds, ...userIds, ...authUserIds])
     );
 
     if (idsToClean.length === 0) {
-      if (purgeDeclineLog) {
-        await admin.from("decline_log").delete().ilike("email", cleanedEmail);
+      const remainingAuthUsers = await findAuthUserIdsByEmail(cleanedEmail);
+      if (forceAuthDelete && remainingAuthUsers.length > 0) {
+        return json(
+          {
+            success: false,
+            error: "Unable to remove existing auth account for this email yet. Please retry.",
+            remainingAuthUsers: remainingAuthUsers.length,
+          },
+          409
+        );
       }
-      return json({
-        success: true,
-        cleaned: 0,
-        message: "No declined user or auth record found for that email.",
-      });
+      return json({ success: true, cleaned: 0, message: "No declined user or auth record found for that email." });
     }
 
     let profilesDeleted = 0;
@@ -173,9 +163,19 @@ Deno.serve(async (req) => {
     }
 
     const remainingAuthUsers = await findAuthUserIdsByEmail(cleanedEmail);
-
-    if (purgeDeclineLog) {
-      await admin.from("decline_log").delete().ilike("email", cleanedEmail);
+    if (forceAuthDelete && remainingAuthUsers.length > 0) {
+      return json(
+        {
+          success: false,
+          error: "Account cleanup was partial. Existing auth user still found for this email.",
+          cleaned: idsToClean.length,
+          profilesDeleted,
+          usersDeleted,
+          authDeleted,
+          remainingAuthUsers: remainingAuthUsers.length,
+        },
+        409
+      );
     }
 
     return json({
@@ -184,7 +184,6 @@ Deno.serve(async (req) => {
       profilesDeleted,
       usersDeleted,
       authDeleted,
-      remainingAuthUsers: remainingAuthUsers.length,
     });
   } catch (error) {
     return json(

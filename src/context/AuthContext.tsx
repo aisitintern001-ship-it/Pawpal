@@ -524,12 +524,21 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       
       // FIRST: Check decline log (covers cases where the account was deleted after being declined)
       try {
-        const { data: declineLogData, error: declineLogError } = await Promise.race([
-          supabase.rpc("get_decline_reason", { email_input: cleanedEmail }),
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("RPC timeout")), 5000)
-          )
-        ]) as any;
+        const timeoutResult = new Promise<{
+          data: null;
+          error: Error;
+        }>((resolve) => {
+          setTimeout(() => resolve({ data: null, error: new Error("RPC timeout") }), 5000);
+        });
+
+        const { data: declineLogData, error: declineLogError } =
+          (await Promise.race([
+            supabase.rpc("get_decline_reason", { email_input: cleanedEmail }),
+            timeoutResult,
+          ])) as {
+            data: any;
+            error: { message?: string } | null;
+          };
 
         const declineLogEntry = Array.isArray(declineLogData)
           ? declineLogData[0]
@@ -548,8 +557,15 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
             declinedUserId: logUserId,
           };
         }
+
+        if (declineLogError?.message && declineLogError.message !== "RPC timeout") {
+          console.warn(
+            "Decline log check failed, continuing with login:",
+            declineLogError.message
+          );
+        }
       } catch (rpcError) {
-        // If RPC fails (function doesn't exist or times out), continue with login
+        // If RPC fails unexpectedly, continue with login.
         console.warn("Decline log check failed, continuing with login:", rpcError);
       }
 
