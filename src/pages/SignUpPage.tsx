@@ -353,6 +353,7 @@ const SignUpPage = () => {
                          type={showPassword ? "text" : "password"}
                          value={password}
                          onChange={(e) => setPassword(e.target.value)}
+                         aria-describedby="passwordHelp"
                          className="w-full pl-10 pr-10 px-4 py-3 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent"
                          placeholder="Create a password"
                          minLength={6}
@@ -367,6 +368,9 @@ const SignUpPage = () => {
                          {showPassword ? <FaEyeSlash /> : <FaEye />}
                        </button>
                      </div>
+                     <p id="passwordHelp" className="mt-2 text-xs text-gray-500">
+                       Must include 1 uppercase, 1 lowercase, 1 number, and 1 special character.
+                     </p>
                    </div>
 
                    <div>
@@ -415,11 +419,6 @@ const SignUpPage = () => {
                    </label>
                  </div>
 
-                 {error && (
-                   <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-                     {error}
-                   </div>
-                 )}
               </div>
             )}
 

@@ -19,7 +19,8 @@ interface Notification {
   user_id: string;
   type: string;
   message: string;
-  read: boolean;
+  read?: boolean;
+  is_read?: boolean;
   created_at: string;
   link?: string;
   post_id?: number;
@@ -54,7 +55,14 @@ export const NotificationBadge: React.FC = () => {
     []
   );
   const [selectMode, setSelectMode] = useState(false);
+  const [readColumn, setReadColumn] = useState<"read" | "is_read">("read");
   const navigate = useNavigate();
+
+  const isNotificationRead = (notification: Notification) => {
+    if (typeof notification.read === "boolean") return notification.read;
+    if (typeof notification.is_read === "boolean") return notification.is_read;
+    return false;
+  };
 
   // Fetch unread notifications count
   useEffect(() => {
@@ -76,8 +84,15 @@ export const NotificationBadge: React.FC = () => {
 
         if (data) {
           setNotifications(data);
+          if (data.length > 0) {
+            if ("read" in data[0]) {
+              setReadColumn("read");
+            } else if ("is_read" in data[0]) {
+              setReadColumn("is_read");
+            }
+          }
           // Count unread ones
-          const unread = data.filter((n) => !n.read).length;
+          const unread = data.filter((n) => !isNotificationRead(n)).length;
           setUnreadCount(unread);
 
           // Enhance notifications with additional data
@@ -195,8 +210,15 @@ export const NotificationBadge: React.FC = () => {
 
       if (data) {
         setNotifications(data);
+        if (data.length > 0) {
+          if ("read" in data[0]) {
+            setReadColumn("read");
+          } else if ("is_read" in data[0]) {
+            setReadColumn("is_read");
+          }
+        }
         // Count unread ones
-        const unread = data.filter((n) => !n.read).length;
+        const unread = data.filter((n) => !isNotificationRead(n)).length;
         setUnreadCount(unread);
 
         // Reset selection when refreshing
@@ -253,9 +275,11 @@ export const NotificationBadge: React.FC = () => {
   };
 
   const markAsRead = async (notificationId: number) => {
+    const updatePayload =
+      readColumn === "is_read" ? { is_read: true } : { read: true };
     const { error } = await supabase
       .from("notifications")
-      .update({ read: true })
+      .update(updatePayload)
       .eq("id", notificationId);
 
     if (error) {
@@ -267,7 +291,7 @@ export const NotificationBadge: React.FC = () => {
     setNotifications((prevNotifications) =>
       prevNotifications.map((notification) =>
         notification.id === notificationId
-          ? { ...notification, read: true }
+          ? { ...notification, read: true, is_read: true }
           : notification
       )
     );
@@ -275,7 +299,7 @@ export const NotificationBadge: React.FC = () => {
     setEnhancedNotifications((prevNotifications) =>
       prevNotifications.map((notification) =>
         notification.id === notificationId
-          ? { ...notification, read: true }
+          ? { ...notification, read: true, is_read: true }
           : notification
       )
     );
@@ -293,7 +317,7 @@ export const NotificationBadge: React.FC = () => {
     }
 
     // Mark as read
-    if (!notification.read) {
+    if (!isNotificationRead(notification)) {
       markAsRead(notification.id);
     }
 
@@ -370,11 +394,14 @@ export const NotificationBadge: React.FC = () => {
   const markAllAsRead = async () => {
     if (notifications.length === 0) return;
 
+    const updatePayload =
+      readColumn === "is_read" ? { is_read: true } : { read: true };
+
     const { error } = await supabase
       .from("notifications")
-      .update({ read: true })
+      .update(updatePayload)
       .eq("user_id", user?.id)
-      .eq("read", false);
+      .eq(readColumn, false);
 
     if (error) {
       console.error("Error marking all notifications as read:", error);
@@ -382,11 +409,19 @@ export const NotificationBadge: React.FC = () => {
     }
 
     setNotifications((prevNotifications) =>
-      prevNotifications.map((notification) => ({ ...notification, read: true }))
+      prevNotifications.map((notification) => ({
+        ...notification,
+        read: true,
+        is_read: true,
+      }))
     );
 
     setEnhancedNotifications((prevNotifications) =>
-      prevNotifications.map((notification) => ({ ...notification, read: true }))
+      prevNotifications.map((notification) => ({
+        ...notification,
+        read: true,
+        is_read: true,
+      }))
     );
 
     setUnreadCount(0);
@@ -587,7 +622,7 @@ export const NotificationBadge: React.FC = () => {
                   className={`p-3 border-b border-gray-100 ${
                     selectMode ? "cursor-pointer" : ""
                   } hover:bg-violet-50 transition-colors ${
-                    !notification.read ? "bg-violet-50" : ""
+                    !isNotificationRead(notification) ? "bg-violet-50" : ""
                   } ${
                     selectedNotifications.includes(notification.id)
                       ? "bg-violet-100"

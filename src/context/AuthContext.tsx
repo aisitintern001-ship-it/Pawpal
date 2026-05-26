@@ -52,6 +52,35 @@ function isAuthEmailCallbackUrl(): boolean {
   );
 }
 
+const withTimeout = async <T,>(
+  promise: Promise<T>,
+  ms: number,
+  message: string
+): Promise<T> =>
+  new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(message)), ms);
+    promise
+      .then((value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((timeoutError) => {
+        window.clearTimeout(timer);
+        reject(timeoutError);
+      });
+  });
+
+const clearSupabaseAuthStorage = () => {
+  if (typeof window === "undefined") return;
+  for (const key of Object.keys(localStorage)) {
+    const isLegacyKey = key.startsWith("supabase.auth.");
+    const isSupabaseToken = key.startsWith("sb-") && key.endsWith("-auth-token");
+    if (isLegacyKey || isSupabaseToken || key === "userRole") {
+      localStorage.removeItem(key);
+    }
+  }
+};
+
 export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [user, setUser] = useState<User | null>(null);
   const [role, setRole] = useState<string | null>(null);
@@ -154,9 +183,8 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       const blockPendingSession = await shouldBlockPendingUserSession(session.user);
 
       if (blockPendingSession) {
-        await supabase.auth.signOut();
         localStorage.removeItem("userRole");
-        setUser(null);
+        setUser(session.user);
         return;
       }
 
@@ -300,9 +328,8 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       const blockPendingSession = await shouldBlockPendingUserSession(session.user);
 
       if (blockPendingSession) {
-        await supabase.auth.signOut();
         localStorage.removeItem("userRole");
-        setUser(null);
+        setUser(session.user);
         return;
       }
 
@@ -323,24 +350,6 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   ): Promise<AuthResponse> => {
     try {
       const cleanedEmail = email.toLowerCase().trim();
-
-      const withTimeout = async <T,>(
-        promise: Promise<T>,
-        ms: number,
-        message: string
-      ): Promise<T> =>
-        new Promise<T>((resolve, reject) => {
-          const timer = window.setTimeout(() => reject(new Error(message)), ms);
-          promise
-            .then((value) => {
-              window.clearTimeout(timer);
-              resolve(value);
-            })
-            .catch((timeoutError) => {
-              window.clearTimeout(timer);
-              reject(timeoutError);
-            });
-        });
 
       // Ensure we are starting from a clean session to avoid weird auth redirects
       // if the user was previously signed in on this device.
@@ -521,6 +530,14 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     try {
       console.log("Attempting to sign in...");
       const cleanedEmail = email.toLowerCase().trim();
+
+      // Clear any stale local session before signing in again.
+      try {
+        await supabase.auth.signOut({ scope: "local" });
+      } catch (signOutError) {
+        console.warn("Local sign-out before login failed:", signOutError);
+      }
+      clearSupabaseAuthStorage();
       
       // FIRST: Check decline log (covers cases where the account was deleted after being declined)
       try {
@@ -571,11 +588,15 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
       // SECOND: Check if user is declined BEFORE attempting password authentication
       // This way we can show the decline modal even if password is wrong
-      const { data: declinedCheck, error: declinedCheckError } = await supabase
-        .from("users")
-        .select("declined, declined_reason, user_id")
-        .ilike("email", cleanedEmail)
-        .maybeSingle();
+      const { data: declinedCheck, error: declinedCheckError } = await withTimeout(
+        supabase
+          .from("users")
+          .select("declined, declined_reason, user_id")
+          .ilike("email", cleanedEmail)
+          .maybeSingle(),
+        15000,
+        "Checking account status is taking too long. Please try again."
+      );
 
       // If we found a declined user, return decline reason immediately
       if (!declinedCheckError && declinedCheck && declinedCheck.declined === true) {
@@ -595,10 +616,14 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       }
 
       // Now attempt password authentication
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email: cleanedEmail,
-        password,
-      });
+      const { data, error } = await withTimeout(
+        supabase.auth.signInWithPassword({
+          email: cleanedEmail,
+          password,
+        }),
+        15000,
+        "Signing in is taking too long. Please check your connection and try again."
+      );
 
       if (error) {
         console.error("Sign in error:", error);
@@ -617,7 +642,11 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
       // Check if email is confirmed first
       if (!data.user.email_confirmed_at) {
-        await supabase.auth.signOut();
+        await withTimeout(
+          supabase.auth.signOut(),
+          10000,
+          "Sign out timed out. Please refresh and try again."
+        );
         return {
           success: false,
           error: "Please verify your email address before signing in. Check your inbox for the verification link.",
@@ -625,15 +654,23 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       }
 
       // Get user role, verification, and declined status from users table
-      const { data: userData, error: userError } = await supabase
-        .from("users")
-        .select("role, verified, declined, declined_reason")
-        .eq("user_id", data.user.id)
-        .single();
+      const { data: userData, error: userError } = await withTimeout(
+        supabase
+          .from("users")
+          .select("role, verified, declined, declined_reason")
+          .eq("user_id", data.user.id)
+          .single(),
+        15000,
+        "Fetching your account details is taking too long. Please try again."
+      );
 
       if (userError || !userData) {
         console.error("Error fetching user role:", userError);
-        await supabase.auth.signOut();
+        await withTimeout(
+          supabase.auth.signOut(),
+          10000,
+          "Sign out timed out. Please refresh and try again."
+        );
         return {
           success: false,
           error: "Error fetching user account. Please contact support.",
@@ -645,7 +682,11 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         await invokeDeclinedCleanup(cleanedEmail, [data.user.id], {
           purgeDeclineLog: true,
         });
-        await supabase.auth.signOut();
+        await withTimeout(
+          supabase.auth.signOut(),
+          10000,
+          "Sign out timed out. Please refresh and try again."
+        );
         return {
           success: false,
           error: "Your account has been declined and you cannot log in.",
@@ -661,7 +702,11 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       if (userData.role === "user") {
         // Check if verified field exists and is true
         if (userData.verified !== true) {
-          await supabase.auth.signOut();
+          await withTimeout(
+            supabase.auth.signOut(),
+            10000,
+            "Sign out timed out. Please refresh and try again."
+          );
           return {
             success: false,
             error: "Your account is awaiting vet/admin approval. You cannot log in until your account has been verified. We'll notify you once it's approved.",
@@ -683,26 +728,30 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       }
       // Preserve existing role - don't overwrite admin/vet roles
       // Only update if the role from database is valid, otherwise keep existing
-      const { error: upsertError } = await supabase
-        .from("users")
-        .upsert([
-          {
-            user_id: data.user.id,
-            email: data.user.email,
-            role: userData?.role || "user", // userData comes from database query, so it's already the correct role
-            full_name: data.user.user_metadata?.full_name ||
-              (data.user.user_metadata?.first_name
-                ? `${data.user.user_metadata.first_name}${data.user.user_metadata?.last_name ? ' ' + data.user.user_metadata.last_name : ''}`
-                : null) ||
-              data.user.email?.split("@")[0] || null,
-            adoption_validation: adoptionValidation,
-            created_at: new Date().toISOString(),
-          }
-        ], { 
-          onConflict: 'user_id',
-          // Don't update role if it already exists (preserve admin/vet roles)
-          // The role from userData is already correct from the database query above
-        });
+      const { error: upsertError } = await withTimeout(
+        supabase
+          .from("users")
+          .upsert([
+            {
+              user_id: data.user.id,
+              email: data.user.email,
+              role: userData?.role || "user", // userData comes from database query, so it's already the correct role
+              full_name: data.user.user_metadata?.full_name ||
+                (data.user.user_metadata?.first_name
+                  ? `${data.user.user_metadata.first_name}${data.user.user_metadata?.last_name ? ' ' + data.user.user_metadata.last_name : ''}`
+                  : null) ||
+                data.user.email?.split("@")[0] || null,
+              adoption_validation: adoptionValidation,
+              created_at: new Date().toISOString(),
+            }
+          ], { 
+            onConflict: 'user_id',
+            // Don't update role if it already exists (preserve admin/vet roles)
+            // The role from userData is already correct from the database query above
+          }),
+        15000,
+        "Saving your account details is taking too long. Please try again."
+      );
       if (upsertError) {
         console.error('Upsert error:', upsertError);
       }
@@ -715,7 +764,10 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       console.error("Unexpected error during sign in:", error);
       return {
         success: false,
-        error: "An unexpected error occurred",
+        error:
+          error instanceof Error
+            ? error.message
+            : "An unexpected error occurred",
       };
     }
   };
@@ -726,17 +778,11 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       setUser(null);
       setRole(null);
 
-      // Clear all localStorage data
-      for (const key of Object.keys(localStorage)) {
-        if (key.startsWith("supabase.auth.")) {
-          localStorage.removeItem(key);
-        }
-      }
-      // Also clear your custom role key
-      localStorage.removeItem("userRole");
+      // Clear local auth state even if network sign-out hangs.
+      clearSupabaseAuthStorage();
 
-      // Kill the session
-      const { error } = await supabase.auth.signOut();
+      // Kill the local session without relying on network.
+      const { error } = await supabase.auth.signOut({ scope: "local" });
       if (error) throw error;
 
       // Navigate to landing page

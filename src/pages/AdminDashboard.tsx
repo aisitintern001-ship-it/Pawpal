@@ -945,7 +945,7 @@ const PostManagement = () => {
         } else if (filter === "approved") {
           query = query.in("status", ["approved", "Approved"]);
         } else if (filter === "pending") {
-          query = query.in("status", ["pending", "Pending"]);
+          query = query.in("status", ["pending", "Pending", "pending_vet_review"]);
         } else if (filter === "rejected") {
           query = query.in("status", ["rejected", "Rejected"]);
         } else {
@@ -1000,17 +1000,45 @@ const PostManagement = () => {
     postId: number,
     action: "approve" | "reject" | "remove"
   ) => {
+    const targetPost = posts.find((post) => String(post.id) === String(postId));
     try {
       if (action === "remove") {
         const { error } = await supabase.from("posts").delete().eq("id", postId); // <-- FIXED
         if (error) throw error;
         toast.success("Post removed successfully");
       } else {
+        const newStatus = action === "approve" ? "approved" : "rejected";
         const { error } = await supabase
           .from("posts") // <-- FIXED
-          .update({ status: action === "approve" ? "approved" : "rejected" })
+          .update({ status: newStatus })
           .eq("id", postId);
         if (error) throw error;
+
+        const ownerId = targetPost?.user_id || targetPost?.auth_users_id;
+        if (ownerId) {
+          const postName = targetPost?.name?.trim() || "your post";
+          const message =
+            action === "approve"
+              ? `Your post "${postName}" has been approved.`
+              : `Your post "${postName}" has been rejected.`;
+          const { error: notificationError } = await supabase
+            .from("notifications")
+            .insert([
+              {
+                user_id: ownerId,
+                type: action === "approve" ? "post_approved" : "post_rejected",
+                message,
+                is_read: false,
+                created_at: new Date().toISOString(),
+                link: `/post/${postId}`,
+                post_id: postId,
+              },
+            ]);
+
+          if (notificationError) {
+            console.error("Error creating post notification:", notificationError);
+          }
+        }
         toast.success(`Post ${action}d successfully`);
       }
       fetchPosts();
@@ -1077,69 +1105,77 @@ const PostManagement = () => {
             </tr>
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
-            {posts.map((post) => (
-              <tr
-                key={post.id}
-                className="hover:bg-gray-50 cursor-pointer"
-                onClick={() => handlePostClick(post)}
-              >
-                <td className="px-6 py-4 whitespace-nowrap">{post.name}</td>
-                <td className="px-6 py-4 whitespace-nowrap">
-                  {post.ownerName}
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap">
-                  <span
-                    className={`px-2 py-1 rounded-full text-xs ${
-                      post.status === "approved"
-                        ? "bg-green-100 text-green-800"
-                        : post.status === "rejected"
-                        ? "bg-red-100 text-red-800"
-                        : post.status === "adopted"
-                        ? "bg-blue-100 text-blue-800"
-                        : "bg-yellow-100 text-yellow-800"
-                    }`}
-                  >
-                    {post.status.replace(/_/g, " ").toUpperCase()}
-                  </span>
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap">
-                  {new Date(post.created_at).toLocaleDateString()}
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap space-x-2">
-                  {post.status === "pending" && (
-                    <>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handlePostAction(post.id, "approve");
-                        }}
-                        className="bg-green-500 text-white px-3 py-1 rounded-md text-sm hover:bg-green-600"
-                      >
-                        Approve
-                      </button>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handlePostAction(post.id, "reject");
-                        }}
-                        className="bg-yellow-500 text-white px-3 py-1 rounded-md text-sm hover:bg-yellow-600"
-                      >
-                        Reject
-                      </button>
-                    </>
-                  )}
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handlePostAction(post.id, "remove");
-                    }}
-                    className="bg-red-500 text-white px-3 py-1 rounded-md text-sm hover:bg-red-600"
-                  >
-                    Remove
-                  </button>
-                </td>
-              </tr>
-            ))}
+            {posts.map((post) => {
+              const normalizedStatus = String(post.status || "").toLowerCase();
+              const isPendingStatus =
+                normalizedStatus === "pending" ||
+                normalizedStatus === "pending_vet_review";
+              const statusLabel = post.status
+                ? post.status.replace(/_/g, " ").toUpperCase()
+                : "PENDING";
+              const statusClass =
+                normalizedStatus === "approved"
+                  ? "bg-green-100 text-green-800"
+                  : normalizedStatus === "rejected"
+                  ? "bg-red-100 text-red-800"
+                  : normalizedStatus === "adopted"
+                  ? "bg-blue-100 text-blue-800"
+                  : "bg-yellow-100 text-yellow-800";
+
+              return (
+                <tr
+                  key={post.id}
+                  className="hover:bg-gray-50 cursor-pointer"
+                  onClick={() => handlePostClick(post)}
+                >
+                  <td className="px-6 py-4 whitespace-nowrap">{post.name}</td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    {post.ownerName}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <span className={`px-2 py-1 rounded-full text-xs ${statusClass}`}>
+                      {statusLabel}
+                    </span>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    {new Date(post.created_at).toLocaleDateString()}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap space-x-2">
+                    {isPendingStatus && (
+                      <>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handlePostAction(post.id, "approve");
+                          }}
+                          className="bg-green-500 text-white px-3 py-1 rounded-md text-sm hover:bg-green-600"
+                        >
+                          Approve
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handlePostAction(post.id, "reject");
+                          }}
+                          className="bg-yellow-500 text-white px-3 py-1 rounded-md text-sm hover:bg-yellow-600"
+                        >
+                          Reject
+                        </button>
+                      </>
+                    )}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handlePostAction(post.id, "remove");
+                      }}
+                      className="bg-red-500 text-white px-3 py-1 rounded-md text-sm hover:bg-red-600"
+                    >
+                      Remove
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>

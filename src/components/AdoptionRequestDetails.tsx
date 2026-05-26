@@ -321,7 +321,7 @@ export const AdoptionRequestDetails: React.FC<AdoptionRequestDetailsProps> = ({
             user_id: request.requester_id,
             type: `adoption_${status}`,
             message,
-            read: false,
+            is_read: false,
             created_at: new Date().toISOString(),
             link: `/post/${request.post_id}`,
             post_id: request.post_id,

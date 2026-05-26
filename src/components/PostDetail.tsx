@@ -847,7 +847,7 @@ export const PostDetail = ({ postId }: { postId: string }) => {
           setIsRequesting(true);
           try {
             const result = await sendAdoptionRequest(post.id, user.id, ownerId, post.name, reason);
-            toast.success("Adoption request sent! Redirecting to chat...");
+            toast.success("Adoption request sent!");
             setIsAdoptionReasonModalOpen(false);
             checkExistingRequest();
             

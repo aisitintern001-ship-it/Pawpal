@@ -105,9 +105,9 @@ function App() {
 
       // If we cannot find the profile row for a regular user, treat them as pending.
       if (error || !userRow) {
-        const metaRole = user.user_metadata?.role || "user";
+        const metaRole =
+          user.user_metadata?.role || localStorage.getItem("userRole") || null;
         if (metaRole === "user") {
-          await supabase.auth.signOut();
           localStorage.removeItem("userRole");
           navigate("/verify-email", {
             state: {
@@ -122,7 +122,6 @@ function App() {
       }
 
       if (userRow.role === "user" && userRow.verified !== true) {
-        await supabase.auth.signOut();
         localStorage.removeItem("userRole");
         navigate("/verify-email", {
           state: {

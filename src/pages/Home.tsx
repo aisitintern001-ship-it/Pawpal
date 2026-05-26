@@ -99,7 +99,7 @@ const Home = () => {
       let query = supabase
         .from("posts")
         .select("*")
-        .eq("status", "approved");
+        .in("status", ["approved", "Approved"]);
 
       if (filters.breed) {
         query = query.ilike("breed", `%${filters.breed}%`);
