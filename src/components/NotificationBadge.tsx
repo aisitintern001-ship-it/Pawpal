@@ -68,8 +68,8 @@ export const NotificationBadge: React.FC = () => {
   useEffect(() => {
     if (!user) return;
 
-    const fetchNotifications = async () => {
-      setLoading(true);
+    const fetchNotifications = async (showLoading: boolean = true) => {
+      if (showLoading) setLoading(true);
       try {
         const { data, error } = await supabase
           .from("notifications")
@@ -172,7 +172,7 @@ export const NotificationBadge: React.FC = () => {
 
     // Set up real-time subscription for new notifications
     const subscription = supabase
-      .channel("notifications_changes")
+      .channel(`notifications_changes_${user.id}`)
       .on(
         "postgres_changes",
         {
@@ -181,9 +181,27 @@ export const NotificationBadge: React.FC = () => {
           table: "notifications",
           filter: `user_id=eq.${user.id}`,
         },
-        () => {
-          fetchNotifications();
-        }
+        () => fetchNotifications(false)
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "notifications",
+          filter: `user_id=eq.${user.id}`,
+        },
+        () => fetchNotifications(false)
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "DELETE",
+          schema: "public",
+          table: "notifications",
+          filter: `user_id=eq.${user.id}`,
+        },
+        () => fetchNotifications(false)
       )
       .subscribe();
 

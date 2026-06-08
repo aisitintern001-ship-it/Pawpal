@@ -426,7 +426,7 @@ export default function AdoptionManagement() {
                       id: uid,
                       full_name: Array.isArray(nameData) ? nameData[0] : nameData,
                       email: null,
-                    };
+                    };  
                     console.log(`Found name for adopter ${uid}: ${usersMap[uid].full_name}`);
                   } else {
                     console.warn(`Could not fetch name for adopter ${uid}:`, nameError);
@@ -438,7 +438,7 @@ export default function AdoptionManagement() {
             );
           }
           
-          // Log final users map
+          //   Log final users map
           console.log(`Successfully fetched ${Object.keys(usersMap).length} adopter names:`, 
             Object.entries(usersMap).map(([id, user]) => ({ id, name: user.full_name }))
           );
@@ -643,17 +643,31 @@ export default function AdoptionManagement() {
             {records.map((r) => (
               <tr key={r.post_id}>
                 <td className="px-6 py-4 whitespace-nowrap">
-                  <div className="font-medium text-gray-900">{r.post_name}</div>
-                  <div className="text-sm text-gray-500">ID: {r.post_id}</div>
+                  <div className="flex items-center gap-3">
+                    {r.image_url ? (
+                      <img
+                        src={r.image_url}
+                        alt={r.post_name}
+                        className="h-12 w-12 rounded-lg object-cover border border-gray-200"
+                        onError={(e) => {
+                          e.currentTarget.style.display = "none";
+                        }}
+                      />
+                    ) : (
+                      <div className="h-12 w-12 rounded-lg bg-gray-100 border border-gray-200" />
+                    )}
+                    <div>
+                      <div className="font-medium text-gray-900">{r.post_name}</div>
+                      <div className="text-sm text-gray-500">ID: {r.post_id}</div>
+                    </div>
+                  </div>
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap">
                   <div className="text-gray-700">{r.pet_type || '—'}</div>
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap">
                   <div className="font-medium text-gray-900">{r.adopter_name}</div>
-                  {r.adopter_email ? (
-                    <div className="text-sm text-gray-500">{r.adopter_email}</div>
-                  ) : null}
+                  <div className="text-sm text-gray-500">{r.adopter_email || "—"}</div>
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                   {r.adopted_at ? new Date(r.adopted_at).toLocaleDateString(undefined, {

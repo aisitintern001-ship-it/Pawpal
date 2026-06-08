@@ -846,34 +846,10 @@ export const PostDetail = ({ postId }: { postId: string }) => {
           }
           setIsRequesting(true);
           try {
-            const result = await sendAdoptionRequest(post.id, user.id, ownerId, post.name, reason);
+            await sendAdoptionRequest(post.id, user.id, ownerId, post.name, reason);
             toast.success("Adoption request sent!");
             setIsAdoptionReasonModalOpen(false);
             checkExistingRequest();
-            
-            // Navigate to chat if conversation was created
-            if (result && (result as any).conversationId) {
-              setTimeout(() => {
-                navigate(`/chat/${(result as any).conversationId}`);
-              }, 1000);
-            } else {
-              // Fallback: try to find existing conversation
-              try {
-                const { data: existingConv } = await supabase
-                  .rpc('find_shared_conversation', {
-                    user_id_1: ownerId,
-                    user_id_2: user.id,
-                    specific_post_id: post.id,
-                  });
-                if (existingConv && existingConv.length > 0) {
-                  setTimeout(() => {
-                    navigate(`/chat/${existingConv[0].conversation_id}`);
-                  }, 1000);
-                }
-              } catch {
-                // Chat navigation is optional
-              }
-            }
           } catch (error: unknown) {
             const message =
               error instanceof Error

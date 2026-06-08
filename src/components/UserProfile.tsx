@@ -23,6 +23,7 @@ import { Link } from "react-router-dom";
 interface UserData {
   id: string;
   full_name?: string;
+  email?: string;
   bio: string;
   location: string;
   is_shelter: boolean;
@@ -349,6 +350,10 @@ export const UserProfile = ({ profileId }: UserProfileProps) => {
     enabled: targetUserId !== "",
     retry: 1,
   });
+
+  const emailToShow = isOwnProfile
+    ? user?.email || userData?.email
+    : userData?.email;
 
   // Initialize bio from userData when it loads
   useEffect(() => {
@@ -847,11 +852,18 @@ export const UserProfile = ({ profileId }: UserProfileProps) => {
               {/* User Info Section */}
               <div className="flex-1 text-center sm:text-left">
                 <div className="flex flex-col sm:flex-row items-center sm:items-start justify-between gap-3 mb-2">
-                  <h1 className="text-2xl sm:text-3xl lg:text-4xl font-bold text-slate-800">
-                    {isOwnProfile
-                      ? user?.user_metadata?.full_name || user?.email
-                      : userData?.full_name || "User"}
-                  </h1>
+                  <div className="flex flex-col items-center sm:items-start">
+                    <h1 className="text-2xl sm:text-3xl lg:text-4xl font-bold text-slate-800">
+                      {isOwnProfile
+                        ? user?.user_metadata?.full_name || user?.email
+                        : userData?.full_name || "User"}
+                    </h1>
+                    {emailToShow && (
+                      <p className="mt-1 text-sm sm:text-base font-medium text-slate-500 break-all">
+                        {emailToShow}
+                      </p>
+                    )}
+                  </div>
                   {isOwnProfile && (
                     <button
                       onClick={openEditModal}

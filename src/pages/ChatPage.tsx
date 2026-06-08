@@ -74,6 +74,7 @@ const ChatPage: React.FC = () => {
   // Add state for image upload
   const [uploadingImage, setUploadingImage] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
 
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -98,6 +99,15 @@ const ChatPage: React.FC = () => {
       document.title = "Pawpal Chat";
     }
   }, []);
+
+  const getImageDownloadName = (url: string) => {
+    const cleanUrl = url.split("?")[0];
+    const lastSegment = cleanUrl.split("/").pop();
+    if (lastSegment && lastSegment.includes(".")) {
+      return lastSegment;
+    }
+    return "pawpal-image";
+  };
 
   // Resolve display names consistently so chat shows real names (e.g., "Joey De Guzman")
   const getUserInfo = useCallback(
@@ -1674,19 +1684,25 @@ const ChatPage: React.FC = () => {
                     }`}
                   >
                     {message.image_url && (
-                      <img
-                        src={message.image_url}
-                        alt="Sent image"
-                        className="mb-2 max-w-xs max-h-60 rounded-lg border"
-                        style={{ objectFit: 'cover' }}
-                        onError={(e) => {
-                          console.error('Failed to load image:', message.image_url);
-                          e.currentTarget.style.display = 'none';
-                        }}
-                        onLoad={() => {
-                          console.log('Image loaded successfully:', message.image_url);
-                        }}
-                      />
+                      <button
+                        type="button"
+                        onClick={() => setPreviewImageUrl(message.image_url || null)}
+                        className="mb-2 block max-w-xs max-h-60 rounded-lg border overflow-hidden focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                        aria-label="Open image"
+                      >
+                        <img
+                          src={message.image_url}
+                          alt="Sent image"
+                          className="block w-full h-full object-cover cursor-zoom-in"
+                          onError={(e) => {
+                            console.error('Failed to load image:', message.image_url);
+                            e.currentTarget.parentElement?.classList.add("hidden");
+                          }}
+                          onLoad={() => {
+                            console.log('Image loaded successfully:', message.image_url);
+                          }}
+                        />
+                      </button>
                     )}
                     {message.content && <p className="text-sm leading-relaxed">{message.content}</p>}
                     <p
@@ -1852,6 +1868,42 @@ const ChatPage: React.FC = () => {
               <button onClick={() => handleDeleteConversation(showDeleteDialog)} disabled={deleteLoading} className="px-4 py-2 bg-red-500 text-white rounded">{deleteLoading ? "Deleting..." : "Delete"}</button>
             </div>
           </div>
+        </div>
+      )}
+      {previewImageUrl && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
+          onClick={() => setPreviewImageUrl(null)}
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="absolute top-4 right-4 flex items-center gap-2">
+            <a
+              href={previewImageUrl}
+              download={getImageDownloadName(previewImageUrl)}
+              onClick={(event) => event.stopPropagation()}
+              className="px-3 py-2 text-sm font-semibold text-slate-900 bg-white/90 hover:bg-white rounded-full shadow"
+            >
+              Download
+            </a>
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                setPreviewImageUrl(null);
+              }}
+              className="text-white bg-black/60 hover:bg-black/80 rounded-full w-10 h-10 text-xl"
+              aria-label="Close image preview"
+            >
+              ×
+            </button>
+          </div>
+          <img
+            src={previewImageUrl}
+            alt="Full size"
+            className="max-h-[90vh] max-w-[90vw] rounded-lg shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          />
         </div>
       )}
     </div>
